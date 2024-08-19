@@ -1,0 +1,230 @@
+library(ggplot2)
+library(dplyr)
+library(lme4)
+library(effects)
+library(effectsize)
+library(tidyverse) # needed for data manipulation.
+library(RColorBrewer) # needed for some extra colours in one of the graphs
+library(lmerTest)# to get p-value estimations that are not part of the standard lme4 packages
+
+setwd('D:/my research/tiktok harvard/data')
+dt = read.csv('tt_comment_case1_formlm.csv')
+
+dt <- within(dt, treatment <- relevel(as.factor(treatment), ref='Control'))
+dt <- within(dt, assignment <- relevel(as.factor(assignment), ref='Control'))
+dt = dt %>% mutate(prepost_b_da = ifelse(prepost=='Before', 'Pre', 'Post'),
+                   prepost_bd_a = ifelse(prepost=='After', 'Post', 'Pre'))
+dt <- within(dt, prepost_b_da <- relevel(as.factor(prepost_b_da), ref='Pre'))
+dt <- within(dt, prepost_bd_a <- relevel(as.factor(prepost_bd_a), ref='Pre'))
+
+
+vary = 'cm_knowledge_bi'
+varx = 'assignment'
+vary_l = c('cm_express_appreciation',
+           'cm_knowledge_agreement', 'cm_knowledge_application', 'cm_knowledge_bi',
+           'cm_knowledge_clarification', 'cm_knowledge_disagreement',
+           'cm_knowledge_reconceptualization', 'cm_knowledge_reflection',
+           'cm_relevant_to_video', 'cm_seek_professional_help', 'cm_seek_wb_info',
+           'cm_self_disclose_mh', 'cm_wb_coping')
+
+get_mlm_base_res <- function(vary, varx, lm_res_df, dt){
+  col_select_l = c(vary, varx, 'prepost_b_da', 'TTID', 'VID')
+  df = dt %>% select(all_of(col_select_l))
+  colnames(df) = c('y', 'intervention',  'prepost_b_da', 'TTID', 'VID')
+  
+  ## three level
+  model = lmer(formula = y ~ 1 + intervention*prepost_b_da + (1 |TTID) + (1|TTID:VID), data = df)
+  
+  std_m = effectsize::standardize_parameters(model)
+  lm_df = as.data.frame(summary(model)$coefficients)
+  lm_df = cbind(lm_df, data.frame(std_m)[,c('Std_Coefficient', 'CI_low', 'CI_high')])
+  lm_df['std_SE'] = attr(std_m, 'standard_error')
+  lm_df$var = row.names(lm_df)
+  lm_df$between_var = as.data.frame(VarCorr(model))['vcov'][1,]
+  lm_df$within_var = as.data.frame(VarCorr(model))['vcov'][2,]
+  lm_df$between_var_std = as.data.frame(VarCorr(model))['sdcor'][1,]
+  lm_df$within_var_std = as.data.frame(VarCorr(model))['sdcor'][2,]
+  lm_df$n_group = summary(model)$ngrps[1]
+  lm_df$n_all = summary(model)$devcomp$dims['N'][1]
+  # also calculate vpc: variance partitioning coefficient
+  lm_df$vpc = as.data.frame(VarCorr(model))['vcov'][1,] / (as.data.frame(VarCorr(model))['vcov'][1,]+as.data.frame(VarCorr(model))['vcov'][2,])
+  lm_df$type = 'comment|video|creator'
+  lm_df$x = varx
+  lm_df$y = vary
+  lm_df$model_spe = 'base'
+  lm_res_df = rbind(lm_res_df, lm_df)
+  
+  ## two level
+  model = lmer(formula = y ~ 1 + intervention*prepost_b_da + (1 |TTID), data = df)
+  
+  std_m = effectsize::standardize_parameters(model)
+  lm_df = as.data.frame(summary(model)$coefficients)
+  lm_df = cbind(lm_df, data.frame(std_m)[,c('Std_Coefficient', 'CI_low', 'CI_high')])
+  lm_df['std_SE'] = attr(std_m, 'standard_error')
+  lm_df$var = row.names(lm_df)
+  lm_df$between_var = as.data.frame(VarCorr(model))['vcov'][1,]
+  lm_df$within_var = as.data.frame(VarCorr(model))['vcov'][2,]
+  lm_df$between_var_std = as.data.frame(VarCorr(model))['sdcor'][1,]
+  lm_df$within_var_std = as.data.frame(VarCorr(model))['sdcor'][2,]
+  lm_df$n_group = summary(model)$ngrps[1]
+  lm_df$n_all = summary(model)$devcomp$dims['N'][1]
+  # also calculate vpc: variance partitioning coefficient
+  lm_df$vpc = as.data.frame(VarCorr(model))['vcov'][1,] / (as.data.frame(VarCorr(model))['vcov'][1,]+as.data.frame(VarCorr(model))['vcov'][2,])
+  lm_df$type = 'comment|creator'
+  lm_df$x = varx
+  lm_df$y = vary
+  lm_df$model_spe = 'base'
+  lm_res_df = rbind(lm_res_df, lm_df)
+  
+  print(paste0(varx, '-', vary, ' done'))
+  
+  return(lm_res_df)
+}
+
+
+lm_res_df = data.frame()
+for (vary in vary_l){
+  for (varx in c('assignment', 'treatment')){
+    lm_res_df = get_mlm_base_res(vary, varx, lm_res_df, dt)
+  }
+}
+write.csv(lm_res_df, 'tt_case1_mlm_res.csv', row.names = F, na='')
+
+
+## LARGE FOLLOWER
+dt = dt %>% mutate(largefollow = ifelse(ttfollow>2000000, 1, 0))
+dt <- within(dt, largefollow <- as.factor(largefollow))
+
+## session attendance
+dt = dt %>% mutate(session1_num = ifelse(session1=='Yes', 1, 0),
+                   session2_num = ifelse(session2=='Yes', 1, 0),
+                   session3_num = ifelse(session3=='Yes', 1, 0),
+                   session4_num = ifelse(session4=='Yes', 1, 0),
+                   session5_num = ifelse(session5=='Yes', 1, 0),
+                   session6_num = ifelse(session6=='Yes', 1, 0),
+                   session7_num = ifelse(session7=='Yes', 1, 0),)
+dt = dt %>% mutate(sessions_num = session1_num + session2_num + session3_num + session4_num + session5_num + session6_num + session7_num)
+dt = dt %>% mutate(sessions_bi = ifelse(sessions_num>0, 1, 0))
+dt <- within(dt, sessions_bi <- as.factor(sessions_bi))
+
+
+
+## lgbtp, licensed, coaching
+dt <- within(dt, lgbtq <- relevel(as.factor(lgbtq), ref='No'))
+dt <- within(dt, licensed <- relevel(as.factor(licensed), ref='No'))
+dt <- within(dt, coaching <- relevel(as.factor(coaching), ref='No'))
+
+
+get_mlm_moderation_res <- function(vary, varx, varm, lm_res_df, dt){
+  col_select_l = c(vary, varx, varm,'prepost_b_da', 'TTID', 'VID')
+  df = dt %>% select(all_of(col_select_l))
+  colnames(df) = c('y', 'intervention', 'moderation',  'prepost_b_da', 'TTID', 'VID')
+  
+  ## three level
+  model = lmer(formula = y ~ 1 + intervention*prepost_b_da*moderation + (1 |TTID) + (1|TTID:VID), data = df)
+  
+  std_m = effectsize::standardize_parameters(model)
+  lm_df = as.data.frame(summary(model)$coefficients)
+  lm_df = cbind(lm_df, data.frame(std_m)[,c('Std_Coefficient', 'CI_low', 'CI_high')])
+  lm_df['std_SE'] = attr(std_m, 'standard_error')
+  lm_df$var = row.names(lm_df)
+  lm_df$between_var = as.data.frame(VarCorr(model))['vcov'][1,]
+  lm_df$within_var = as.data.frame(VarCorr(model))['vcov'][2,]
+  lm_df$between_var_std = as.data.frame(VarCorr(model))['sdcor'][1,]
+  lm_df$within_var_std = as.data.frame(VarCorr(model))['sdcor'][2,]
+  lm_df$n_group = summary(model)$ngrps[1]
+  lm_df$n_all = summary(model)$devcomp$dims['N'][1]
+  # also calculate vpc: variance partitioning coefficient
+  lm_df$vpc = as.data.frame(VarCorr(model))['vcov'][1,] / (as.data.frame(VarCorr(model))['vcov'][1,]+as.data.frame(VarCorr(model))['vcov'][2,])
+  lm_df$type = 'comment|video|creator'
+  lm_df$x = varx
+  lm_df$y = vary
+  lm_df$model_spe = 'base'
+  lm_res_df = rbind(lm_res_df, lm_df)
+  
+  ## two level
+  model = lmer(formula = y ~ 1 + intervention*prepost_b_da*moderation + (1 |TTID), data = df)
+  
+  std_m = effectsize::standardize_parameters(model)
+  lm_df = as.data.frame(summary(model)$coefficients)
+  lm_df = cbind(lm_df, data.frame(std_m)[,c('Std_Coefficient', 'CI_low', 'CI_high')])
+  lm_df['std_SE'] = attr(std_m, 'standard_error')
+  lm_df$var = row.names(lm_df)
+  lm_df$between_var = as.data.frame(VarCorr(model))['vcov'][1,]
+  lm_df$within_var = as.data.frame(VarCorr(model))['vcov'][2,]
+  lm_df$between_var_std = as.data.frame(VarCorr(model))['sdcor'][1,]
+  lm_df$within_var_std = as.data.frame(VarCorr(model))['sdcor'][2,]
+  lm_df$n_group = summary(model)$ngrps[1]
+  lm_df$n_all = summary(model)$devcomp$dims['N'][1]
+  # also calculate vpc: variance partitioning coefficient
+  lm_df$vpc = as.data.frame(VarCorr(model))['vcov'][1,] / (as.data.frame(VarCorr(model))['vcov'][1,]+as.data.frame(VarCorr(model))['vcov'][2,])
+  lm_df$type = 'comment|creator'
+  lm_df$x = varx
+  lm_df$y = vary
+  lm_df$model_spe = 'base'
+  lm_res_df = rbind(lm_res_df, lm_df)
+  
+  print(paste0(varx, '-', vary,'-',varm, ' done'))
+  
+  return(lm_res_df)
+}
+
+lm_res_df2 = data.frame()
+for (vary in vary_l){
+  for (varx in c('assignment', 'treatment')){
+    for (varm in c('largefollow', 'sessions_bi', 'lgbtq', 'licensed', 'coaching')){
+      lm_res_df2 = get_mlm_moderation_res(vary, varx, varm, lm_res_df2, dt)
+    }
+  }
+}
+write.csv(lm_res_df2, 'tt_case1_mlm_res_moderation.csv', row.names = F, na='')
+
+
+
+######### depre
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_b_da*largefollow + (1 |TTID) + (1|TTID:VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + assignment*prepost_b_da + (1 |VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_b_da + (1 |VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + assignment*prepost_b_da + (1 |TTID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_b_da + (1 |TTID), data = dt)
+summary(model)
+
+## all bd_a not working 
+model = lmer(formula = cm_knowledge_bi ~ 1 + assignment*prepost_bd_a + (1 |TTID) + (1|TTID:VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_bd_a + (1 |TTID) + (1|TTID:VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + assignment*prepost_bd_a + (1 |VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_bd_a + (1 |VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + assignment*prepost_bd_a + (1 |TTID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_bd_a + (1 |TTID), data = dt)
+summary(model)
+
+
+## too much given our sample size
+library(merDeriv)
+library(clubSandwich)
+library(CR2)
+CR2::robust_mixed(model, Gname = 'TTID', type = 'CR0')
+
+sand <- sandwich(model, 
+                 bread = bread(model),
+                 mean = meat(model, level = 3))
+
+res = vcovCR(model, type = 'CR2')
