@@ -8,6 +8,7 @@ library(RColorBrewer) # needed for some extra colours in one of the graphs
 library(lmerTest)# to get p-value estimations that are not part of the standard lme4 packages
 
 setwd('D:/my research/tiktok harvard/data')
+set.seed(1)
 dt = read.csv('tt_comment_case1_formlm.csv')
 
 dt <- within(dt, treatment <- relevel(as.factor(treatment), ref='Control'))
@@ -19,9 +20,10 @@ dt <- within(dt, prepost_bd_a <- relevel(as.factor(prepost_bd_a), ref='Pre'))
 
 
 vary = 'cm_knowledge_bi'
-varx = 'assignment'
-vary_l = c('cm_express_appreciation',
-           'cm_knowledge_agreement', 'cm_knowledge_application', 'cm_knowledge_bi',
+varx = 'treatment'
+varm = 'sessions_bi'
+vary_l = c('cm_knowledge_bi', 'cm_express_appreciation',
+           'cm_knowledge_agreement', 'cm_knowledge_application', 
            'cm_knowledge_clarification', 'cm_knowledge_disagreement',
            'cm_knowledge_reconceptualization', 'cm_knowledge_reflection',
            'cm_relevant_to_video', 'cm_seek_professional_help', 'cm_seek_wb_info',
@@ -105,6 +107,9 @@ dt = dt %>% mutate(session1_num = ifelse(session1=='Yes', 1, 0),
                    session7_num = ifelse(session7=='Yes', 1, 0),)
 dt = dt %>% mutate(sessions_num = session1_num + session2_num + session3_num + session4_num + session5_num + session6_num + session7_num)
 dt = dt %>% mutate(sessions_bi = ifelse(sessions_num>0, 1, 0))
+dt = dt %>% mutate(sessions_att = case_when(sessions_bi>0 & treatment=='C+M' ~ 'CM-attended',
+                                            sessions_bi==0 & treatment=='C+M' ~ 'CM-not-attended',
+                                            treatment!='C+M' ~ 'Control'))
 dt <- within(dt, sessions_bi <- as.factor(sessions_bi))
 
 
@@ -114,7 +119,7 @@ dt <- within(dt, lgbtq <- relevel(as.factor(lgbtq), ref='No'))
 dt <- within(dt, licensed <- relevel(as.factor(licensed), ref='No'))
 dt <- within(dt, coaching <- relevel(as.factor(coaching), ref='No'))
 
-
+set.seed(1)
 get_mlm_moderation_res <- function(vary, varx, varm, lm_res_df, dt){
   col_select_l = c(vary, varx, varm,'prepost_b_da', 'TTID', 'VID')
   df = dt %>% select(all_of(col_select_l))
@@ -139,7 +144,8 @@ get_mlm_moderation_res <- function(vary, varx, varm, lm_res_df, dt){
   lm_df$type = 'comment|video|creator'
   lm_df$x = varx
   lm_df$y = vary
-  lm_df$model_spe = 'base'
+  lm_df$m = varm
+  lm_df$model_spe = 'moderation'
   lm_res_df = rbind(lm_res_df, lm_df)
   
   ## two level
@@ -161,7 +167,8 @@ get_mlm_moderation_res <- function(vary, varx, varm, lm_res_df, dt){
   lm_df$type = 'comment|creator'
   lm_df$x = varx
   lm_df$y = vary
-  lm_df$model_spe = 'base'
+  lm_df$m = varm
+  lm_df$model_spe = 'moderation'
   lm_res_df = rbind(lm_res_df, lm_df)
   
   print(paste0(varx, '-', vary,'-',varm, ' done'))
@@ -176,10 +183,145 @@ for (vary in vary_l){
       lm_res_df2 = get_mlm_moderation_res(vary, varx, varm, lm_res_df2, dt)
     }
   }
+  write.csv(lm_res_df2, 'tt_case1_mlm_res_moderation_tmpsave.csv', row.names = F, na='')
 }
 write.csv(lm_res_df2, 'tt_case1_mlm_res_moderation.csv', row.names = F, na='')
 
+#https://newsroom.tiktok.com/en-us/mentalhealthawarenessmonth-2023
+#https://tilburgsciencehub.com/topics/analyze/causal-inference/rdd/regression-discontinuity-in-time-rdit/#:~:text=Regression%20discontinuity%20in%20time%20(RDiT)%20designs%20are%20those%20RD%20applications,before%20it%2C%20they%20are%20not. 
+#https://ds4ps.org/pe4ps-textbook/docs/p-020-time-series.html#model-overview 
+# rd: https://yutatoyama.github.io/AppliedEconometrics2021/06_RD/RD2_implementation.html#41 
 
+## case2
+library(rdrobust) #for plots
+library(lmtest) #to run a Durbin-Watson test
+library(sandwich) #to compute HAC standard errors
+library(vctrs)
+dm = read_csv('tt_comment_case2_for_its.csv')
+dm1 = read_csv('tt_comment_case2_for_its_byvideo.csv')
+dm2 = read_csv('tt_comment_case2_for_its_bycomment.csv')
+
+level_adj = 15
+dm = dm %>% mutate(time_running = video_rela_time + level_adj)
+dm = dm %>% mutate(treat_dummy = ifelse(time_running>0, 1, 0),
+                   time_running_qdr = time_running^2)
+rdplot(dm$cm_knowledge, dm$time_running, 
+       binselect = 'esmv', p=2, 
+       x.label = 'Running Variable', y.label = 'Outcome',
+       title = '')
+
+## analyses 2: video level analysis
+dmv = dm %>% group_by(video_id, comment_count, video_rela_time) %>% summarize(y=mean(cm_knowledge_bi),
+                                                                              yc=mean(cm_knowledge))
+dmv = dmv %>% mutate(time_running = video_rela_time + level_adj)
+dmv = dmv %>% mutate(treat_dummy = ifelse(time_running>0, 1, 0),
+                   time_running_qdr = time_running^2)
+gg_srd = ggplot(data=dmv, aes(time_running, y)) +
+  geom_point(aes(x = time_running, y = y), data = dmv)  +
+  #xlim(0,1) + ylim(0, ) +
+  geom_vline(xintercept = 0) +
+  xlab("Date of the video posted, centered around May 15, 2023") +
+  ylab("Proportion of comment with knowledge construction") +
+  #scale_y_continuous(breaks=seq(0,1,0.2)) +
+  ggtitle("Video-level knowledge construction and the date of video") 
+gg_srd + stat_smooth(aes(time_running, y, group = treat_dummy), 
+                     method = "glm", formula = y ~ x + I(x^2))
+rdit3 <- lm(y ~ time_running + treat_dummy + time_running*treat_dummy, 
+           subset(dmv, (time_running >= -50) | (time_running <=50))
+) 
+summary(rdit3)
+
+
+gg_srd = ggplot(data=dmv, aes(time_running, yc)) +
+  geom_point(aes(x = time_running, y = yc), data = dmv)  +
+  #xlim(0,1) + ylim(0, ) +
+  geom_vline(xintercept = 0) +
+  xlab("Date of the video posted, centered around May 15, 2023") +
+  ylab("Score of knowledge construction") +
+  #scale_y_continuous(breaks=seq(0,1,0.2)) +
+  ggtitle("Video-level knowledge construction and the date of video") 
+gg_srd + stat_smooth(aes(time_running, yc, group = treat_dummy), 
+                     method = "glm", formula = y ~ x + I(x^2))
+rdit4 <- lm(yc ~ time_running + treat_dummy + time_running*treat_dummy, 
+            subset(dmv, (time_running >= -50) | (time_running <=50))
+) 
+summary(rdit4)
+
+## analysis 3
+gg_srd = ggplot(data=dm, aes(time_running, cm_knowledge_bi)) +
+  geom_point(aes(x = time_running, y = cm_knowledge_bi), data = dm)  +
+  geom_vline(xintercept = 0) +
+  xlab("Date of the video posted, centered on May 15, 2023") +
+  ylab("Have knowledge construction or not") +
+  ggtitle("Knowledge construction in comment and the date of video") 
+gg_srd + stat_smooth(aes(time_running, cm_knowledge_bi, group = treat_dummy), 
+                     method = "glm", formula = y ~ x + I(x^2))
+rdplot(dm$cm_knowledge_bi, dm$time_running, 
+        p=2, 
+       x.label = 'Running Variable', y.label = 'Outcome',
+       title = 'RD plot: proportion of comment with knowledge construction by video date')
+
+gg_srd = ggplot(data=dm, aes(time_running, cm_knowledge)) +
+  geom_point(aes(x = time_running, y = cm_knowledge), data = dm)  +
+  geom_vline(xintercept = 0) +
+  xlab("Date of the video posted, centered on May 15, 2023") +
+  ylab("Knowledge construction score") +
+  ggtitle("Knowledge construction in comment and the date of video") 
+gg_srd + stat_smooth(aes(time_running, cm_knowledge, group = treat_dummy), 
+                     method = "lm", formula = y ~ x + I(x^2))
+rdplot(dm$cm_knowledge, dm$time_running, 
+       p=2, 
+       x.label = 'Running Variable', y.label = 'Outcome',
+       title = 'RD plot: knowledge construction score by video date')
+
+rdit5 <- lmer(formula = cm_knowledge_bi ~ 1 + user_as_ttcolab+time_running*treat_dummy+time_running_qdr*treat_dummy + (1 |video_id), 
+           dm)
+summary(rdit5)
+rdit6 <- lmer(formula = cm_knowledge ~ 1 + user_as_ttcolab+time_running*treat_dummy+ time_running_qdr*treat_dummy+ (1 |video_id), 
+             dm)
+summary(rdit6)
+
+library(rdrobust)
+rdr <- rdrobust(y = dm$cm_knowledge,
+                x = dm$time_running, c = 0)
+summary(rdr)
+
+
+## analysis 1: Applying ITS or RDIT
+dm1 = dm1 %>% mutate(time_running = video_rela_time + level_adj)
+dm1 = dm1 %>% mutate(treat_dummy = ifelse(time_running>0, 1, 0))
+with(subset(dm1, time_running >= -50 & time_running <=50), 
+     rdplot(y = cm_knowledge_bi, p=2, x = time_running, nbins=100, 
+            #y.lim = c(0, 1), 
+            title="Discontinuity in knowledge construction after the introduction of MHA", 
+            x.label="Date of VIDEO (centered on May 15, 2023)", 
+            y.label="Proportion of comments with knowledge construction"))
+rdit <- lm(cm_knowledge_bi ~ time_running + treat_dummy + time_running*treat_dummy, 
+           subset(dm1, (time_running >= -50) | (time_running <=50))
+) 
+summary(rdit)
+
+dm2 = dm2 %>% mutate(time_running = comment_rela_time + level_adj)
+dm2 = dm2 %>% mutate(treat_dummy = ifelse(time_running>0, 1, 0))
+with(subset(dm2, time_running >= -50 & time_running <=50), 
+     rdplot(y = cm_knowledge_bi, p=2, x = time_running, nbins=100, 
+            #y.lim = c(0, 1), 
+            title="Discontinuity in knowledge construction after the introduction of the MHA", 
+            x.label="Date of COMMENT (centered on May 15, 2023)", 
+            y.label="Proportion of comments with knowledge construction"))
+rdit2 <- lm(cm_knowledge_bi ~ time_running + treat_dummy + time_running*treat_dummy, 
+           subset(dm2, (time_running >= -50) | (time_running <=50))
+) 
+summary(rdit2)
+
+
+rdit <- lm(cm_knowledge_bi ~ time_running + treat_dummy + time_running*treat_dummy, 
+           subset(dm1, (time_running >= -100 & time_running<= -30) | (time_running>30 & time_running <=100))
+           ) 
+summary(rdit)
+rdit2 <- lm(cm_knowledge_bi ~ time_running + treatment_dummy + time_running*treatment_dummy, 
+           subset(dm2, time_running >= -50 & time_running <=50)) 
+summary(rdit2)
 
 ######### depre
 model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_b_da*largefollow + (1 |TTID) + (1|TTID:VID), data = dt)
