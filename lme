@@ -1,0 +1,1113 @@
+library(ggplot2)
+library(dplyr)
+library(lme4)
+library(effects)
+library(effectsize)
+library(tidyverse) 
+library(RColorBrewer) 
+library(lmerTest)
+library(margins)
+library(vctrs)
+library(sjPlot)
+library(sjmisc)
+
+
+setwd('D:/my research/tiktok harvard/data')
+set.seed(1)
+dt = read.csv('tt_comment_case1_formlm.csv')
+
+dt = dt %>% mutate(cm_knowledge = (cm_knowledge - min(cm_knowledge)) / (max(cm_knowledge) - min(cm_knowledge)))
+dt <- within(dt, treatment <- relevel(as.factor(treatment), ref='Control'))
+dt <- within(dt, assignment <- relevel(as.factor(assignment), ref='Control'))
+dt = dt %>% mutate(prepost_b_da = ifelse(prepost=='Before', 'Pre', 'Post'),
+                   prepost_bd_a = ifelse(prepost=='After', 'Post', 'Pre'))
+dt <- within(dt, prepost_b_da <- relevel(as.factor(prepost_b_da), ref='Pre'))
+dt <- within(dt, prepost_bd_a <- relevel(as.factor(prepost_bd_a), ref='Pre'))
+
+
+vary = 'cm_knowledge_bi'
+varx = 'treatment'
+varm = 'sessions_bi'
+vary_l = c('cm_knowledge','cm_knowledge_bi', 'cm_express_appreciation',
+           'cm_knowledge_agreement', 'cm_knowledge_application', 
+           'cm_knowledge_clarification', 'cm_knowledge_disagreement',
+           'cm_knowledge_reconceptualization', 'cm_knowledge_reflection',
+           'cm_relevant_to_video', 'cm_seek_professional_help', 'cm_seek_wb_info',
+           'cm_self_disclose_mh', 'cm_wb_coping')
+
+
+
+get_mlm_base_res <- function(vary, varx, lm_res_df, dt, need_two_level=F){
+  col_select_l = c(vary, varx, 'prepost_b_da', 'TTID', 'VID')
+  df = dt %>% dplyr::select(all_of(col_select_l))
+  colnames(df) = c('y', 'intervention',  'prepost_b_da', 'TTID', 'VID')
+  
+  ## three level
+  model = lmer(formula = y ~ 1 + intervention*prepost_b_da + (1|TTID) + (1|TTID:VID), data = df)
+  #plot_model(model, type = "int", terms = c('intervention', 'prepost_b_da'))
+  
+  #margin = margins(model, variables = "intervention", at=list(prepost_b_da = c('Pre', 'Post')))
+  margin = margins(model, variables = "prepost_b_da", at=list(intervention = c('Control', 'C+M', 'MO')))
+  
+  std_m = effectsize::standardize_parameters(model)
+  lm_df = as.data.frame(summary(model)$coefficients)
+  lm_df$var = row.names(lm_df)
+  lm_df = cbind(lm_df, data.frame(std_m)[,c('Std_Coefficient', 'CI_low', 'CI_high')])
+  lm_df['std_SE'] = attr(std_m, 'standard_error')
+  
+  lm_df$between_var = as.data.frame(VarCorr(model))['vcov'][1,]
+  lm_df$within_var = as.data.frame(VarCorr(model))['vcov'][2,]
+  lm_df$between_var_std = as.data.frame(VarCorr(model))['sdcor'][1,]
+  lm_df$within_var_std = as.data.frame(VarCorr(model))['sdcor'][2,]
+  lm_df$n_group = summary(model)$ngrps[1]
+  lm_df$n_all = summary(model)$devcomp$dims['N'][1]
+  # also calculate vpc: variance partitioning coefficient
+  lm_df$vpc = as.data.frame(VarCorr(model))['vcov'][1,] / (as.data.frame(VarCorr(model))['vcov'][1,]+as.data.frame(VarCorr(model))['vcov'][2,])
+  lm_df$type = 'comment|video|creator'
+  lm_df$x = varx
+  lm_df$y = vary
+  lm_df$model_spe = 'base'
+  
+  ## add the marginal effect
+  mm_df = data.frame(summary(margin))
+  mm_df[setdiff(names(lm_df), names(mm_df))] <- NA
+  lm_df[setdiff(names(mm_df), names(lm_df))] <- NA
+  lm_df = rbind(lm_df, mm_df)
+  
+  lm_res_df = rbind(lm_res_df, lm_df)
+  
+  ## two level
+  if(need_two_level){
+    
+    model = lmer(formula = y ~ 1 + intervention*prepost_b_da + (1 |TTID), data = df)
+    
+    std_m = effectsize::standardize_parameters(model)
+    lm_df = as.data.frame(summary(model)$coefficients)
+    lm_df = cbind(lm_df, data.frame(std_m)[,c('Std_Coefficient', 'CI_low', 'CI_high')])
+    lm_df['std_SE'] = attr(std_m, 'standard_error')
+    lm_df$var = row.names(lm_df)
+    lm_df$between_var = as.data.frame(VarCorr(model))['vcov'][1,]
+    lm_df$within_var = as.data.frame(VarCorr(model))['vcov'][2,]
+    lm_df$between_var_std = as.data.frame(VarCorr(model))['sdcor'][1,]
+    lm_df$within_var_std = as.data.frame(VarCorr(model))['sdcor'][2,]
+    lm_df$n_group = summary(model)$ngrps[1]
+    lm_df$n_all = summary(model)$devcomp$dims['N'][1]
+    # also calculate vpc: variance partitioning coefficient
+    lm_df$vpc = as.data.frame(VarCorr(model))['vcov'][1,] / (as.data.frame(VarCorr(model))['vcov'][1,]+as.data.frame(VarCorr(model))['vcov'][2,])
+    lm_df$type = 'comment|creator'
+    lm_df$x = varx
+    lm_df$y = vary
+    lm_df$model_spe = 'base'
+    lm_res_df = rbind(lm_res_df, lm_df)
+  }
+  
+  print(paste0(varx, '-', vary, ' done'))
+  
+  return(lm_res_df)
+}
+
+
+lm_res_df = data.frame()
+for (vary in vary_l){
+  for (varx in c('treatment')){
+    lm_res_df = get_mlm_base_res(vary, varx, lm_res_df, dt)
+  }
+}
+write.csv(lm_res_df, 'tt_case1_mlm_res_0824.csv', row.names = F, na='')
+
+lm_res_df_02 = data.frame()
+for (vary in vary_l[1]){
+  for (varx in c('treatment')){
+    lm_res_df_02 = get_mlm_base_res(vary, varx, lm_res_df_02, dt)
+  }
+}
+write.csv(lm_res_df_02, 'tt_case1_mlm_res_0824_scaledcon.csv', row.names = F, na='')
+
+## version 2
+dt_v2 = dt %>% filter(prepost != 'During')
+lm_res_df2 = data.frame()
+for (vary in vary_l){
+  for (varx in c('treatment')){
+    lm_res_df2 = get_mlm_base_res(vary, varx, lm_res_df2, dt_v2)
+  }
+}
+write.csv(lm_res_df2, 'tt_case1_mlm_res_aprfuzzy_0824.csv', row.names = F, na='')
+
+dt_v2 = dt %>% filter(prepost != 'During')
+lm_res_df2_02 = data.frame()
+for (vary in vary_l[1]){
+  for (varx in c('treatment')){
+    lm_res_df2_02 = get_mlm_base_res(vary, varx, lm_res_df2_02, dt_v2)
+  }
+}
+write.csv(lm_res_df2_02, 'tt_case1_mlm_res_aprfuzzy_0824_scaledcon.csv', row.names = F, na='')
+
+## engagement
+dt = dt %>% mutate(engagement_large = ifelse(engagement_bi=='big_than10', 'Yes', 'No'))
+
+## LARGE FOLLOWER
+dt = dt %>% mutate(largefollow = ifelse(ttfollow>750000, 'Yes', 'No'))
+dt <- within(dt, largefollow <- as.factor(largefollow))
+dt = dt %>% mutate(ttf = as.integer(ttfollow/500000))
+dt <- within(dt, ttf <- as.factor(ttf))
+unique(dt$ttf)
+
+## find the best cutoff for ttfollow
+col_select_l = c(vary, varx, 'prepost_b_da', 'TTID', 'VID', 'ttf')
+df = dt %>% select(all_of(col_select_l))
+colnames(df) = c('y', 'intervention',  'prepost_b_da', 'TTID', 'VID', 'ttf')
+m2 = lmer(formula = y ~ 1 + intervention*prepost_b_da*ttf + (1|TTID) + (1|TTID:VID), data = df)
+library(sjPlot)
+plot_model(m2, type='pred', terms = c('ttf', 'intervention', 'prepost_b_da'))
+#plot_model(m2, type = "pred", terms = 'ttfollow')
+margin_f = margins(m2, variables = "prepost_b_da", at=list(intervention = c('Control', 'C+M', 'MO')))
+mf = data.frame(margin_f)
+check_df = data.frame()
+for (i in 1:40){
+  mean_tmp = mf %>% filter(intervention=='MO', ttfollow > i*100000, ttfollow <= (i+1)*100000) %>% pull(dydx_prepost_b_daPost) %>% mean()
+check_df = rbind(check_df, t(data.frame(c(i, mean_tmp))))
+}
+
+for (i in 1:40){
+  mean_tmp = mf %>% filter(intervention=='MO', ttfollow > i*100000) %>% pull(dydx_prepost_b_daPost) %>% mean() - mf %>% filter(intervention=='MO', ttfollow <= i*100000) %>% pull(dydx_prepost_b_daPost) %>% mean()
+
+  check_df = rbind(check_df, t(data.frame(c(i, mean_tmp))))
+}
+
+margin_f2 = margins(m2, variables = "prepost_b_da", at=list(intervention = c('Control', 'C+M', 'MO'),
+                                                           ttf = c(0, 1, 2, 3)))
+mf = data.frame(margin_f2)
+mf %.% filter()
+
+summary(margin_f2)
+
+## session attendance
+dt = dt %>% mutate(session1_num = ifelse(session1=='Yes', 1, 0),
+                   session2_num = ifelse(session2=='Yes', 1, 0),
+                   session3_num = ifelse(session3=='Yes', 1, 0),
+                   session4_num = ifelse(session4=='Yes', 1, 0),
+                   session5_num = ifelse(session5=='Yes', 1, 0),
+                   session6_num = ifelse(session6=='Yes', 1, 0),
+                   session7_num = ifelse(session7=='Yes', 1, 0),)
+dt = dt %>% mutate(sessions_num = session1_num + session2_num + session3_num + session4_num + session5_num + session6_num + session7_num)
+dt = dt %>% mutate(sessions_bi = ifelse(sessions_num>0, 1, 0))
+dt = dt %>% mutate(sessions_att = case_when(sessions_bi>0 & treatment=='C+M' ~ 'CM-attended',
+                                            sessions_bi==0 & treatment=='C+M' ~ 'CM-not-attended',
+                                            treatment!='C+M' ~ 'Control'))
+dt <- within(dt, sessions_bi <- as.factor(sessions_bi))
+
+
+
+## lgbtp, licensed, coaching
+dt <- within(dt, lgbtq <- relevel(as.factor(lgbtq), ref='No'))
+dt <- within(dt, licensed <- relevel(as.factor(licensed), ref='No'))
+dt <- within(dt, coaching <- relevel(as.factor(coaching), ref='No'))
+dt <- within(dt, engagement_large <- relevel(as.factor(engagement_large), ref='No'))
+dt <- within(dt, largefollow  <- relevel(as.factor(largefollow), ref='No'))
+
+
+set.seed(1)
+get_mlm_moderation_res <- function(vary, varx, varm, lm_res_df, dt, need_two_level=F){
+  col_select_l = c(vary, varx, varm,'prepost_b_da', 'TTID', 'VID')
+  df = dt %>% dplyr::select(all_of(col_select_l))
+  colnames(df) = c('y', 'intervention', 'moderation',  'prepost_b_da', 'TTID', 'VID')
+  
+  ## three level
+  model = lmer(formula = y ~ 1 + intervention*prepost_b_da*moderation + (1 |TTID) + (1|TTID:VID), data = df)
+  margin_no = margins(model, variables = "prepost_b_da", at=list(intervention = c('Control', 'C+M', 'MO'),
+                                                              moderation = c('No')))
+  margin_yes = margins(model, variables = "prepost_b_da", at=list(intervention = c('Control', 'C+M', 'MO'),
+                                                                 moderation = c('Yes')))
+  
+  std_m = effectsize::standardize_parameters(model)
+  lm_df = as.data.frame(summary(model)$coefficients)
+  lm_df = cbind(lm_df, data.frame(std_m)[,c('Std_Coefficient', 'CI_low', 'CI_high')])
+  lm_df['std_SE'] = attr(std_m, 'standard_error')
+  lm_df$var = row.names(lm_df)
+  lm_df$between_var = as.data.frame(VarCorr(model))['vcov'][1,]
+  lm_df$within_var = as.data.frame(VarCorr(model))['vcov'][2,]
+  lm_df$between_var_std = as.data.frame(VarCorr(model))['sdcor'][1,]
+  lm_df$within_var_std = as.data.frame(VarCorr(model))['sdcor'][2,]
+  lm_df$n_group = summary(model)$ngrps[1]
+  lm_df$n_all = summary(model)$devcomp$dims['N'][1]
+  # also calculate vpc: variance partitioning coefficient
+  lm_df$vpc = as.data.frame(VarCorr(model))['vcov'][1,] / (as.data.frame(VarCorr(model))['vcov'][1,]+as.data.frame(VarCorr(model))['vcov'][2,])
+  lm_df$type = 'comment|video|creator'
+  lm_df$x = varx
+  lm_df$y = vary
+  lm_df$m = varm
+  lm_df$model_spe = 'moderation'
+  
+  ## add the marginal effect
+  mm_df = data.frame(summary(margin_no))
+  colnames(mm_df) = c('factor_no', 'intervention_no', 'moderation_no', 'ame_no',
+                      'SE_no', 'z_no', 'p_no', 'lower_no', 'upper_no')
+  mm_df[setdiff(names(lm_df), names(mm_df))] <- NA
+  lm_df[setdiff(names(mm_df), names(lm_df))] <- NA
+  lm_df = rbind(lm_df, mm_df)
+  
+  mm_df = data.frame(summary(margin_yes))
+  colnames(mm_df) = c('factor_yes', 'intervention_yes', 'moderation_yes', 'ame_yes',
+                      'SE_yes', 'z_yes', 'p_yes', 'lower_yes', 'upper_yes')
+  mm_df[setdiff(names(lm_df), names(mm_df))] <- NA
+  lm_df[setdiff(names(mm_df), names(lm_df))] <- NA
+  lm_df = rbind(lm_df, mm_df)
+  
+  lm_res_df = rbind(lm_res_df, lm_df)
+  
+  
+  ## two level
+  if(need_two_level){
+    
+    model = lmer(formula = y ~ 1 + intervention*prepost_b_da*moderation + (1 |TTID), data = df)
+    
+    std_m = effectsize::standardize_parameters(model)
+    lm_df = as.data.frame(summary(model)$coefficients)
+    lm_df = cbind(lm_df, data.frame(std_m)[,c('Std_Coefficient', 'CI_low', 'CI_high')])
+    lm_df['std_SE'] = attr(std_m, 'standard_error')
+    lm_df$var = row.names(lm_df)
+    lm_df$between_var = as.data.frame(VarCorr(model))['vcov'][1,]
+    lm_df$within_var = as.data.frame(VarCorr(model))['vcov'][2,]
+    lm_df$between_var_std = as.data.frame(VarCorr(model))['sdcor'][1,]
+    lm_df$within_var_std = as.data.frame(VarCorr(model))['sdcor'][2,]
+    lm_df$n_group = summary(model)$ngrps[1]
+    lm_df$n_all = summary(model)$devcomp$dims['N'][1]
+    # also calculate vpc: variance partitioning coefficient
+    lm_df$vpc = as.data.frame(VarCorr(model))['vcov'][1,] / (as.data.frame(VarCorr(model))['vcov'][1,]+as.data.frame(VarCorr(model))['vcov'][2,])
+    lm_df$type = 'comment|creator'
+    lm_df$x = varx
+    lm_df$y = vary
+    lm_df$m = varm
+    lm_df$model_spe = 'moderation'
+    lm_res_df = rbind(lm_res_df, lm_df)
+  }
+  print(paste0(varx, '-', vary,'-',varm, ' done'))
+  
+  return(lm_res_df)
+}
+
+lm_res_df2 = data.frame()
+for (vary in vary_l){
+  for (varx in c('treatment')){
+    for (varm in c('largefollow', 'engagement_large', 'lgbtq', 'licensed', 'coaching')){
+      lm_res_df2 = get_mlm_moderation_res(vary, varx, varm, lm_res_df2, dt)
+    }
+  }
+  write.csv(lm_res_df2, 'tt_case1_mlm_res_moderation_tmpsave_0824.csv', row.names = F, na='')
+}
+write.csv(lm_res_df2, 'tt_case1_mlm_res_moderation_0824.csv', row.names = F, na='')
+
+lm_res_df2_2 = data.frame()
+for (vary in vary_l[1]){
+  for (varx in c('treatment')){
+    for (varm in c('largefollow', 'engagement_large', 'lgbtq', 'licensed', 'coaching')){
+      lm_res_df2_2 = get_mlm_moderation_res(vary, varx, varm, lm_res_df2_2, dt)
+    }
+  }
+}
+write.csv(lm_res_df2_2, 'tt_case1_mlm_res_moderation_0824_scalecon.csv', row.names = F, na='')
+
+## version 2
+lm_res_df2_v2 = data.frame()
+dt_v2 = dt %>% filter(prepost != 'During')
+for (vary in vary_l){
+  for (varx in c('treatment')){
+    for (varm in c('largefollow', 'engagement_large', 'lgbtq', 'licensed', 'coaching')){
+      lm_res_df2_v2 = get_mlm_moderation_res(vary, varx, varm, lm_res_df2_v2, dt_v2)
+    }
+  }
+  write.csv(lm_res_df2_v2, 'tt_case1_mlm_res_moderation_tmpsave_aprfuzzy_0824.csv', row.names = F, na='')
+}
+write.csv(lm_res_df2_v2, 'tt_case1_mlm_res_moderation_aprfuzzy_0824.csv', row.names = F, na='')
+
+#https://newsroom.tiktok.com/en-us/mentalhealthawarenessmonth-2023
+#https://tilburgsciencehub.com/topics/analyze/causal-inference/rdd/regression-discontinuity-in-time-rdit/#:~:text=Regression%20discontinuity%20in%20time%20(RDiT)%20designs%20are%20those%20RD%20applications,before%20it%2C%20they%20are%20not. 
+#https://ds4ps.org/pe4ps-textbook/docs/p-020-time-series.html#model-overview 
+# rd: https://yutatoyama.github.io/AppliedEconometrics2021/06_RD/RD2_implementation.html#41 
+# margin effects: https://library.virginia.edu/data/articles/a-beginners-guide-to-marginal-effects 
+
+## case2 & case 2_2
+library(rdrobust) #for plots
+library(lmtest) #to run a Durbin-Watson test
+library(sandwich) #to compute HAC standard errors
+dm1 = read_csv('tt_comment_case2_for_its_byvideo_0824.csv')
+dm2 = read_csv('tt_comment_case2_2_for_its_byvideo_0830.csv')
+dm3 = read_csv('tt_comment_case2_for_its_byvideo_0910_day.csv')
+
+# scale cm_knowledge
+dm1 = dm1 %>% mutate(cm_knowledge = (cm_knowledge - min(cm_knowledge)) / (max(cm_knowledge) - min(cm_knowledge)))
+dm2 = dm2 %>% mutate(cm_knowledge = (cm_knowledge - min(cm_knowledge)) / (max(cm_knowledge) - min(cm_knowledge)))
+dm3 = dm3 %>% mutate(cm_knowledge = (cm_knowledge - min(cm_knowledge)) / (max(cm_knowledge) - min(cm_knowledge)))
+
+
+# clean dm1, save for stata for the drop may option
+dm11 = dm1 %>% filter(video_rela_time_hour<=0 | video_rela_time_hour>=744) %>% 
+  mutate(timerun = ifelse(video_rela_time_hour<=0, video_rela_time_hour, video_rela_time_hour-743))
+dm12 = dm2 %>% filter(video_rela_time_hour<=0 | video_rela_time_hour>=744) %>% 
+  mutate(timerun = ifelse(video_rela_time_hour<=0, video_rela_time_hour, video_rela_time_hour-743))
+write.csv(dm11, 'tt_comment_case2_for_its_byvideo_0824_dropmay.csv', row.names = F, na='')
+write.csv(dm12, 'tt_comment_case2_2_for_its_byvideo_0830_dropmay.csv', row.names = F, na='')
+
+
+
+varx = 'video_rela_time_hour'
+vary = 'cm_knowledge'
+vary_l = c('cm_knowledge_bi', 'cm_express_appreciation',
+           'cm_knowledge_agreement', 'cm_knowledge_application', 
+           'cm_knowledge_clarification', 'cm_knowledge_disagreement',
+           'cm_knowledge_reconceptualization', 
+           'cm_knowledge_reflection',
+           'cm_relevant_to_video', 
+           'cm_seek_professional_help', 
+           'cm_seek_wb_info',
+           'cm_self_disclose_mh', 
+           'cm_wb_coping',
+           'like_count_y', 'share_count', 'view_count' ,
+           'comment_count', 'cm_knowledge'
+)
+
+vary_l2 = c('like_count_y', 'share_count', 'view_count' ,
+           'comment_count', 'cm_knowledge')
+
+
+
+
+get_case2_rd_res <- function(vary, varx, lm_res_df3, dm1, plot_save_path='/res/', option='hour',
+                             dm1_name='tt_case2_for_its_byvideo_0824_'){
+  
+  ## option keep may
+  df = dm1 %>% dplyr::select(all_of(c(vary, varx)))
+  colnames(df) = c('Outcome', 'time_running')
+  
+  ## remove extreme values in the count columns
+  if(vary %in% c('like_count_y', 'share_count', 'view_count' ,'comment_count')){
+    df = df %>% filter(Outcome <= quantile(Outcome, 0.95)) %>% mutate(Outcome=log(Outcome+1)) %>%
+      mutate(Outcome = (Outcome - min(Outcome)) / (max(Outcome) - min(Outcome)))
+    dt = df %>% setNames(c(vary, 'time_running'))
+    write.csv(dt, paste0(dm1_name, vary,'_keep_may.csv'), row.names = F, na='')
+  } 
+  
+  for(p_selected in 1:4){
+    
+    m1 = rdrobust(df$Outcome, df$time_running, p=p_selected, bwselect='msecomb2', all=T)
+    lm_res = data.frame(cbind(m1$coef, m1$se,m1$pv, m1$ci, 
+                              c(m1$kernel, m1$kernel, m1$kernel), #kernel
+                              c(m1$bws['h','left'], m1$bws['h','left'], m1$bws['h','left']), #hl
+                              c(m1$bws['h','right'], m1$bws['h','right'], m1$bws['h','right']), #hr
+                              c(m1$bws['b','left'], m1$bws['b','left'], m1$bws['b','left']), #bl
+                              c(m1$bws['b','right'], m1$bws['b','right'], m1$bws['b','right']), #br
+                              c(m1$p, m1$p, m1$p), #p
+                              c(m1$q, m1$q, m1$q), #q
+                              c(m1$N_b[1], m1$N_b[1], m1$N_b[1]), #nb left
+                              c(m1$N_b[2], m1$N_b[2], m1$N_b[2]), #nb right
+                              c(m1$N_h[1], m1$N_h[1], m1$N_h[1]), #nh left
+                              c(m1$N_h[2], m1$N_h[2], m1$N_h[2]) #nh right
+    ))
+    colnames(lm_res) = c('coef', 'se', 'p_value', 'ci_l', 'ci_u', 'kernel',
+                         'hl','hr','bl','br', 'polynomial_p','bias_q', 'N_bias_l', 'N_bias_r',
+                         'N_h_l', 'N_h_r')
+    lm_res$option = 'keep_may_selectp'
+    lm_res$vary = vary
+    lm_res$varx = varx
+    lm_res$var = row.names(lm_res)
+    lm_res_df3 = rbind(lm_res_df3, lm_res)
+    #print(summary(m1))
+    jpeg(paste0(getwd(), plot_save_path, vary, '_', varx,'_p',p_selected,"__keep_may.jpg"))
+    rdplot1=  rdplot(df$Outcome, df$time_running,
+                     #binselect = "es", 
+                     nbins=m1$N_h[1]*2,
+                     scale = 1,
+                     kernel = tolower(m1$kernel),
+                     p=m1$p,
+                     h=m1$bws[1],
+                     x.lim = c(-m1$bws[1],m1$bws[1]),
+                     title = paste0("RD Plot - ", vary, ' ~ ', varx, ' (p=', p_selected, ')'),
+                     x.label = varx,
+                     y.label = vary,
+                     #ci=95
+    )
+    dev.off()
+  }
+
+  ## option drop may
+  if (option=='hour'){
+    dm11 = dm1 %>% filter(video_rela_time_hour<=0 | video_rela_time_hour>=744) %>% 
+      mutate(timerun = ifelse(video_rela_time_hour<=0, video_rela_time_hour, video_rela_time_hour-743))
+  } else {
+    dm11 = dm1 %>% filter(video_rela_time_day<=0 | video_rela_time_day>=32) %>% 
+      mutate(timerun = ifelse(video_rela_time_day<=0, video_rela_time_day, video_rela_time_day-31))
+  }
+
+  df = dm11 %>% dplyr::select(all_of(c(vary, 'timerun')))
+  colnames(df) = c('Outcome', 'time_running')
+  
+  ## remove extreme values in the count columns
+  if(vary %in% c('like_count_y', 'share_count', 'view_count' ,'comment_count')){
+    df = df %>% filter(Outcome <= quantile(Outcome, 0.95)) %>% mutate(Outcome=log(Outcome+1)) %>%
+      mutate(Outcome = (Outcome - min(Outcome)) / (max(Outcome) - min(Outcome)))
+    dt = df %>% setNames(c(vary, 'time_running'))
+    write.csv(dt, paste0(dm1_name, vary,'_drop_may.csv'), row.names = F, na='')
+  }
+  
+  
+  
+  for(p_selected in 1:4){  
+    m1 = rdrobust(df$Outcome, df$time_running, p=p_selected, bwselect='msecomb2', all=T)
+    lm_res = data.frame(cbind(m1$coef, m1$se,m1$pv, m1$ci, 
+                              c(m1$kernel, m1$kernel, m1$kernel), #kernel
+                              c(m1$bws['h','left'], m1$bws['h','left'], m1$bws['h','left']), #hl
+                              c(m1$bws['h','right'], m1$bws['h','right'], m1$bws['h','right']), #hr
+                              c(m1$bws['b','left'], m1$bws['b','left'], m1$bws['b','left']), #bl
+                              c(m1$bws['b','right'], m1$bws['b','right'], m1$bws['b','right']), #br
+                              c(m1$p, m1$p, m1$p), #p
+                              c(m1$q, m1$q, m1$q), #q
+                              c(m1$N_b[1], m1$N_b[1], m1$N_b[1]), #nb left
+                              c(m1$N_b[2], m1$N_b[2], m1$N_b[2]), #nb right
+                              c(m1$N_h[1], m1$N_h[1], m1$N_h[1]), #nh left
+                              c(m1$N_h[2], m1$N_h[2], m1$N_h[2]) #nh right
+    ))
+    colnames(lm_res) = c('coef', 'se', 'p_value', 'ci_l', 'ci_u', 'kernel',
+                         'hl','hr','bl','br', 'polynomial_p','bias_q', 'N_bias_l', 'N_bias_r',
+                         'N_h_l', 'N_h_r')
+    lm_res$option = 'drop_may_selectp'
+    lm_res$vary = vary
+    lm_res$varx = varx
+    lm_res$var = row.names(lm_res)
+    
+    lm_res_df3 = rbind(lm_res_df3, lm_res)
+    #print(summary(m1))
+    jpeg(paste0(getwd(), plot_save_path, vary, '_', varx,'_p',p_selected,"__drop_may.jpg"))
+    rdplot1=  rdplot(df$Outcome, df$time_running,
+                     #binselect = "es", 
+                     nbins=m1$N_h[1]*2,
+                     scale = 1,
+                     kernel = tolower(m1$kernel),
+                     p=m1$p,
+                     h=m1$bws[1],
+                     x.lim = c(-m1$bws[1],m1$bws[1]),
+                     title = paste0("RD Plot - ", vary, ' ~ ', varx, ', drop May',  ' (p=', p_selected, ')'),
+                     x.label = varx,
+                     y.label = vary,
+                     #ci=95
+    )
+    dev.off()
+  }
+  
+  print(paste0(vary, '_', varx, " done"))
+  
+  return(lm_res_df3)
+  
+  
+}
+
+lm_res_df30 = data.frame()
+lm_res_df3 = get_case2_rd_res('cm_knowledge', 'video_rela_time_day', lm_res_df30, dm3,option='day', plot_save_path='/res_case21_day/')
+
+lm_res_df3 = data.frame()
+for (vary in vary_l){
+  lm_res_df3 = get_case2_rd_res(vary, varx, lm_res_df3, dm1, plot_save_path='/res_case21_rd/')
+
+}
+write.csv(lm_res_df3, 'tt_case2_rd_res_0830.csv', row.names = F, na='')
+
+lm_res_df3_02 = data.frame()
+for (vary in vary_l2){
+  lm_res_df3_02 = get_case2_rd_res(vary, varx, lm_res_df3_02, dm1, plot_save_path='/res_case21_rd/')
+  
+}
+write.csv(lm_res_df3_02, 'tt_case2_rd_res_0830_scalecon.csv', row.names = F, na='')
+
+
+lm_res_df4 = data.frame()
+for (vary in vary_l){
+  lm_res_df4 = get_case2_rd_res(vary, varx, lm_res_df4, dm2, plot_save_path='/res_case22_rd/',
+                                dm1_name='tt_comment_case2_2_for_its_byvideo_0830_')
+  
+}
+write.csv(lm_res_df4, 'tt_case2_2_rd_res_0830.csv', row.names = F, na='')
+
+lm_res_df4_02 = data.frame()
+for (vary in vary_l2){
+  lm_res_df4_02 = get_case2_rd_res(vary, varx, lm_res_df4_02, dm2, plot_save_path='/res_case22_rd/',
+                                dm1_name='tt_comment_case2_2_for_its_byvideo_0830_')
+  
+}
+write.csv(lm_res_df4_02, 'tt_case2_2_rd_res_0830_scalecon.csv', row.names = F, na='')
+
+
+## ITS analysis
+varx = 'video_rela_time_hour'
+vary = 'cm_knowledge'
+vary_l = c('cm_knowledge_bi', 'cm_express_appreciation',
+           'cm_knowledge_agreement', 'cm_knowledge_application', 
+           'cm_knowledge_clarification', 'cm_knowledge_disagreement',
+           'cm_knowledge_reconceptualization', 
+           'cm_knowledge_reflection',
+           'cm_relevant_to_video', 
+           'cm_seek_professional_help', 
+           'cm_seek_wb_info',
+           'cm_self_disclose_mh', 
+           'cm_wb_coping',
+           'like_count_y', 'share_count', 'view_count' ,
+           'comment_count', 'cm_knowledge'
+)
+
+vary_l2 = c('like_count_y', 'share_count', 'view_count' ,
+            'comment_count', 'cm_knowledge')
+
+## by video by day
+## keep may
+dm11 = read_csv('tt_comment_case2_for_its_byvideo_0910_day.csv')
+
+dm11$time = row.names(dm11)
+dm11 <- dm11 %>% mutate(time = as.integer(time))
+dm11 = dm11 %>% mutate(P = ifelse(video_rela_time_day<=0, 0, video_rela_time_day))
+ts <- lm( cm_knowledge ~ time + treatment_dummy + P, data=dm11 )
+summary(ts)
+
+plot( dm11$time, dm11$cm_knowledge,
+      bty="n", pch=19, col="gray",
+      #ylim = c(0, 300), xlim=c(0,400),
+      xlab = "Time (days)", 
+      ylab = "Knowledge construction score" )
+lines( dm11$time, ts$fitted.values, col="steelblue", lwd=2 )
+abline( v=100, col="firebrick", lty=2 )
+
+
+## drop may
+dm11 = read_csv('tt_comment_case2_for_its_byvideo_0910_day.csv')
+dm11_d = dm11 %>% filter(video_rela_time_day<=0 | video_rela_time_day>31)
+
+dm11_d$time = row.names(dm11_d)
+dm11_d <- dm11_d %>% mutate(time = as.integer(time))
+dm11_d = dm11_d %>% mutate(P = ifelse(video_rela_time_day<=0, 0, time))
+ts <- lm( cm_knowledge_bi ~ time + treatment_dummy + P, data=dm11_d )
+summary(ts)
+
+plot( dm11_d$time, dm11_d$cm_knowledge,
+      bty="n", pch=19, col="gray",
+      #ylim = c(0, 300), xlim=c(0,400),
+      xlab = "Time (days)", 
+      ylab = "Knowledge construction score" )
+lines( dm11_d$time, ts$fitted.values, col="steelblue", lwd=2 )
+abline( v=99, col="firebrick", lty=2 )
+
+## by video by hour
+## keep may
+dm11 = read_csv('tt_comment_case2_for_its_byvideo_0824.csv')
+
+dm11$time = row.names(dm11)
+dm11 <- dm11 %>% mutate(time = as.integer(time))
+dm11 = dm11 %>% mutate(P = ifelse(video_rela_time_hour<=0, 0, video_rela_time_hour))
+
+for (vary in vary_l){
+  print(vary)
+  variables = c('time', 'treatment_dummy', 'P')
+  dm110 = dm11 %>% dplyr::select(all_of(c(vary, variables)))
+  colnames(dm110) = c('outcome','time', 'treatment_dummy', 'P')
+  dm110 = dm110 %>% mutate(outcome = ifelse(outcome>0.5, 1, 0))
+  dm110 = dm110 %>% mutate(outcome = as.factor(outcome))
+  f <- as.formula(paste('outcome', paste(variables, collapse = " + "), sep = " ~ "))
+  ts <- glm( f, data=dm110 , family = "binomial")
+  print(summary(ts))
+}
+
+for (vary in vary_l){
+  print(vary)
+  variables = c('time', 'treatment_dummy', 'P')
+  dm110 = dm11 %>% dplyr::select(all_of(c(vary, variables)))
+  f <- as.formula(paste(vary, paste(variables, collapse = " + "), sep = " ~ "))
+  ts <- glm( f, data=dm110 , family = "binomial")
+  print(summary(ts))
+}
+
+## i found knowledge agreement & express appreciation are two sig ones
+vary = 'cm_express_appreciation'
+variables = c('time', 'treatment_dummy', 'P')
+f <- as.formula(paste(vary, paste(variables, collapse = " + "), sep = " ~ "))
+ts <- lm( f, data=dm11 )
+plot( dm11$time, dm11$cm_express_appreciation,
+      bty="n", pch=19, col="gray",
+      #ylim = c(0, 300), xlim=c(0,400),
+      xlab = "Time (days)", 
+      ylab = vary )
+lines(dm11$time, ts$fitted.values, col="steelblue", lwd=2 )
+abline(v=1412, col="firebrick", lty=2 )
+
+vary = 'cm_knowledge_agreement'
+variables = c('time', 'treatment_dummy', 'P')
+f <- as.formula(paste(vary, paste(variables, collapse = " + "), sep = " ~ "))
+ts <- lm( f, data=dm11 )
+plot( dm110$time, dm110$outcome,
+      bty="n", pch=19, col="gray",
+      #ylim = c(0, 300), xlim=c(0,400),
+      xlab = "Time (days)", 
+      ylab = vary )
+lines(dm110$time, ts$fitted.values, col="steelblue", lwd=2 )
+abline(v=1412, col="firebrick", lty=2 )
+
+
+## drop may
+dm11 = read_csv('tt_comment_case2_for_its_byvideo_0824.csv')
+dm11_d = dm11 %>% filter(video_rela_time_hour<=0 | video_rela_time_hour>31)
+
+dm11_d$time = row.names(dm11_d)
+dm11_d <- dm11_d %>% mutate(time = as.integer(time))
+dm11_d = dm11_d %>% mutate(P = ifelse(video_rela_time_hour<=0, 0, time))
+ts <- lm( cm_knowledge ~ time + treatment_dummy + P, data=dm11_d )
+summary(ts)
+
+for (vary in vary_l){
+  print(vary)
+  variables = c('time', 'treatment_dummy', 'P')
+  dm110 = dm11_d %>% dplyr::select(all_of(c(vary, variables)))
+  colnames(dm110) = c('outcome','time', 'treatment_dummy', 'P')
+  dm110 = dm110 %>% mutate(outcome = ifelse(outcome>0.5, 1, 0))
+  dm110 = dm110 %>% mutate(outcome = as.factor(outcome))
+  f <- as.formula(paste('outcome', paste(variables, collapse = " + "), sep = " ~ "))
+  ts <- glm( f, data=dm110 , family = "binomial")
+  print(summary(ts))
+}
+
+plot( dm11_d$time, dm11_d$cm_knowledge,
+      bty="n", pch=19, col="gray",
+      #ylim = c(0, 300), xlim=c(0,400),
+      xlab = "Time (days)", 
+      ylab = "Knowledge construction score" )
+lines( dm11_d$time, ts$fitted.values, col="steelblue", lwd=2 )
+abline( v=99, col="firebrick", lty=2 )
+
+
+
+###  try by comment
+dm13 = read_csv('tt_comment_case2_for_its_bycomment_0824.csv')
+dm13$time = row.names(dm13)
+dm13 <- dm13 %>% mutate(time = as.integer(time))
+dm13 = dm13 %>% mutate(P = ifelse(comment_rela_time_hour<=0, 0, comment_rela_time_hour))
+ts <- glm( cm_knowledge_bi ~ time + treatment_dummy + P, data=dm13 )
+summary(ts)
+
+plot( dm13$time, dm13$cm_knowledge,
+      bty="n", pch=19, col="gray",
+      #ylim = c(0, 300), xlim=c(0,400),
+      xlab = "Time (days)", 
+      ylab = "Knowledge construction score" )
+lines( dm13$time, ts$fitted.values, col="steelblue", lwd=2 )
+abline( v=2468, col="firebrick", lty=2 )
+
+'The Time coefficient indicates the wellbeing trend before the intervention. It’s positive and significant, indicating that students’ wellbeing increases over time. For each day that passes, the wellbeing increases of 0.19 points on the index.
+
+The Treatment coefficient indicates the increase in the students’ wellbeing immediately after the intervention. We can see that the immediate effect is positive and significant indicating that attending the first class increased the students’ wellbeing of 13.09.
+
+The Time Since Treatment coefficient indicates that the trend has changed after the intervention. The sustained effect is positive and significant, indicating that for each day that passes after the intervention, the wellbeing of students increases of 0.54 points on the index.'
+
+
+
+
+
+
+
+
+
+
+
+
+
+### old### old### old### old### old### old### old### old### old### old### old### old### old### old### old### old
+
+calc_sum_squares <- function(data, lll, coefs) {
+  residuals <- data$Outcome - as.matrix(data %>% select(lll)) %*% coefs
+  sum(residuals^2)
+}
+
+check_best_poly = function(vary, varx, dm1){
+  df = dm1 %>% select(all_of(c(vary, varx)))
+  colnames(df) = c('Outcome', 'time_running')
+  
+  df = df %>%
+    mutate(tr0= 1) %>% 
+    mutate(!!!as.data.frame(poly(x = .$time_running, degree = 4, raw = TRUE))) %>%
+    setNames(c('Outcome', 'tr','tr0', 'tr1', 'tr2', 'tr3', 'tr4'))
+  
+  aa  = rdplot(df$Outcome, df$tr, p=4)
+  lll = c('tr0', 'tr1', 'tr2', 'tr3', 'tr4')
+  sum4 <- calc_sum_squares(df[which(df$tr<0),], lll, aa$coef[, 1]) +
+    calc_sum_squares(df[which(df$tr>=0),], lll, aa$coef[, 2])
+  
+  aa  = rdplot(df$Outcome, df$tr, p=3)
+  lll = c('tr0', 'tr1', 'tr2', 'tr3')
+  sum3 <- calc_sum_squares(df[which(df$tr<0),], lll, aa$coef[, 1]) +
+    calc_sum_squares(df[which(df$tr>=0),], lll, aa$coef[, 2])
+  
+  aa  = rdplot(df$Outcome, df$tr, p=2)
+  lll = c('tr0', 'tr1', 'tr2')
+  sum2 <- calc_sum_squares(df[which(df$tr<0),], lll, aa$coef[, 1]) +
+    calc_sum_squares(df[which(df$tr>=0),], lll, aa$coef[, 2])
+  
+  aa  = rdplot(df$Outcome, df$tr, p=1)
+  lll = c('tr0', 'tr1')
+  sum1 <- calc_sum_squares(df[which(df$tr<0),], lll, aa$coef[, 1]) +
+    calc_sum_squares(df[which(df$tr>=0),], lll, aa$coef[, 2])
+  
+  print(vary)
+  print(c(sum1, sum2, sum3, sum4))
+  return(which.min(c(sum1, sum2, sum3, sum4)))
+}
+
+get_case2_2_rd_res <- function(vary, varx, lm_res_df3, dm1, plot_save_path='/res/'){
+  
+  ## option keep may
+  df = dm1 %>% select(all_of(c(vary, varx)))
+  colnames(df) = c('Outcome', 'time_running')
+  
+  ## remove extreme values in the count columns
+  if(vary %in% c('like_count_y', 'share_count', 'view_count' ,'comment_count')){
+    df = df %>% filter(Outcome <= quantile(Outcome, 0.95)) %>% mutate(Outcome=log(Outcome+1))
+  } 
+  
+  
+  p_selected = check_best_poly(vary, varx, dm1)
+  
+  m1 = rdrobust(df$Outcome, df$time_running, p=p_select, all=T)
+  lm_res = data.frame(cbind(m1$coef, m1$se,m1$pv, m1$ci, 
+                            c(m1$kernel, m1$kernel, m1$kernel), #kernel
+                            c(m1$bws[1], m1$bws[1], m1$bws[1]), #h
+                            c(m1$bws[2], m1$bws[2], m1$bws[2]), #b
+                            c(m1$p, m1$p, m1$p), #p
+                            c(m1$q, m1$q, m1$q), #q
+                            c(m1$N_b[1], m1$N_b[1], m1$N_b[1]), #nb left
+                            c(m1$N_b[2], m1$N_b[2], m1$N_b[2]), #nb right
+                            c(m1$N_h[1], m1$N_h[1], m1$N_h[1]), #nh left
+                            c(m1$N_h[2], m1$N_h[2], m1$N_h[2]) #nh right
+  ))
+  colnames(lm_res) = c('coef', 'se', 'p_value', 'ci_l', 'ci_u', 'kernel',
+                       'bw_h', 'bw_bias', 'polynomial_p', 'bias_q','N_bias_l', 'N_bias_r',
+                       'N_h_l', 'N_h_r')
+  lm_res$option = 'keep_may'
+  lm_res$vary = vary
+  lm_res$varx = varx
+  lm_res$var = row.names(lm_res)
+  lm_res_df3 = rbind(lm_res_df3, lm_res)
+  #print(summary(m1))
+  jpeg(paste0(getwd(), plot_save_path, vary, '_', varx,"__keep_may.jpg"))
+  rdplot1=  rdplot(df$Outcome, df$time_running,
+                   #binselect = "es", 
+                   nbins=m1$N_h[1]*2,
+                   scale = 1,
+                   kernel = tolower(m1$kernel),
+                   p=m1$p,
+                   h=m1$bws[1],
+                   x.lim = c(-m1$bws[1],m1$bws[1]),
+                   title = paste0("RD Plot - ", vary, ' ~ ', varx),
+                   x.label = varx,
+                   y.label = vary,
+                   #ci=95
+  )
+  dev.off()
+  
+  ## option drop may
+  dm11 = dm1 %>% filter(video_rela_time<=0 | video_rela_time>=30) %>% 
+    mutate(timerun = ifelse(video_rela_time<=0, video_rela_time, video_rela_time-30))
+  df = dm11 %>% select(all_of(c(vary, 'timerun')))
+  colnames(df) = c('Outcome', 'time_running')
+  
+  m1 = rdrobust(df$Outcome, df$time_running, all=T)
+  lm_res = data.frame(cbind(m1$coef, m1$se,m1$pv, m1$ci, 
+                            c(m1$kernel, m1$kernel, m1$kernel), #kernel
+                            c(m1$bws[1], m1$bws[1], m1$bws[1]), #h
+                            c(m1$bws[2], m1$bws[2], m1$bws[2]), #b
+                            c(m1$p, m1$p, m1$p), #p
+                            c(m1$q, m1$q, m1$q), #q
+                            c(m1$N_b[1], m1$N_b[1], m1$N_b[1]), #nb left
+                            c(m1$N_b[2], m1$N_b[2], m1$N_b[2]), #nb right
+                            c(m1$N_h[1], m1$N_h[1], m1$N_h[1]), #nh left
+                            c(m1$N_h[2], m1$N_h[2], m1$N_h[2]) #nh right
+  ))
+  colnames(lm_res) = c('coef', 'se', 'p_value', 'ci_l', 'ci_u', 'kernel',
+                       'bw_h', 'bw_bias', 'polynomial_p','bias_q', 'N_bias_l', 'N_bias_r',
+                       'N_h_l', 'N_h_r')
+  lm_res$option = 'drop_may'
+  lm_res$vary = vary
+  lm_res$varx = varx
+  lm_res$var = row.names(lm_res)
+  
+  lm_res_df3 = rbind(lm_res_df3, lm_res)
+  #print(summary(m1))
+  jpeg(paste0(getwd(), plot_save_path, vary, '_', varx,"__drop_may.jpg"))
+  rdplot1=  rdplot(df$Outcome, df$time_running,
+                   #binselect = "es", 
+                   nbins=m1$N_h[1]*2,
+                   scale = 1,
+                   kernel = tolower(m1$kernel),
+                   p=m1$p,
+                   h=m1$bws[1],
+                   x.lim = c(-m1$bws[1],m1$bws[1]),
+                   title = paste0("RD Plot - ", vary, ' ~ ', varx, ', drop May'),
+                   x.label = varx,
+                   y.label = vary,
+                   #ci=95
+  )
+  dev.off()
+  
+  print(paste0(vary, '_', varx, " done"))
+  
+  return(lm_res_df3)
+  
+  
+}
+
+## case 22
+vary_l = c('cm_knowledge_bi', 'cm_express_appreciation',
+           'cm_knowledge_agreement', 'cm_knowledge_application', 
+           'cm_knowledge_clarification', 'cm_knowledge_disagreement',
+           'cm_knowledge_reconceptualization', 
+           #'cm_knowledge_reflection',
+           'cm_relevant_to_video', 
+           #'cm_seek_professional_help', 
+           #'cm_seek_wb_info',
+           #'cm_self_disclose_mh', 
+           'cm_wb_coping',
+           'like_count_y', 'share_count', 'view_count' 
+           #'comment_count'
+           )
+summary(rdbwselect(dm2$cm_knowledge, dm2$video_rela_time_hour, p=3, q=4))
+lm_res_df4 = data.frame()
+for (vary in vary_l){
+  lm_res_df4 = get_case2_2_rd_res(vary, varx, lm_res_df4, dm2, plot_save_path='/res_case22_rd/')
+  
+}
+write.csv(lm_res_df4, 'tt_case2_2_rd_res_0824.csv', row.names = F, na='')
+
+
+
+
+
+p = rdplot(dm1$cm_knowledge, dm1$video_rela_time_hour, 
+           x.label = 'Running Variable', y.label = 'Outcome',
+           title = '')
+m1 = rdrobust(dm1$cm_knowledge, dm1$video_rela_time_hour)
+summary(m1, all=T)
+rdplot1=  rdplot(dm1$cm_knowledge, dm1$video_rela_time_hour,
+                  #binselect = "es", 
+                 nbins=800,
+                  scale = 1,
+                  kernel = tolower(m1$kernel),
+                  p=m1$p,
+                  h=m1$bws[1],
+                  x.lim = c(-m1$bws[1],m1$bws[1]),
+                  title = "RD Plot - Senate Elections Data",
+                  x.label = "Vote Share in Election at time t",
+                  y.label = "Vote Share in Election at time t+1",
+                  #ci=95
+                 )
+
+m2= rdrobust(dm2$cm_knowledge, dm2$comment_rela_time_hour)
+summary(m2)
+
+
+## make the whole may as fuzzy
+dm11 = dm1 %>% filter(video_rela_time_hour<=0 | video_rela_time_hour>=744) %>% 
+  mutate(timerun = ifelse(video_rela_time_hour<=0, video_rela_time_hour, video_rela_time_hour-743))
+m3 = rdrobust(dm11$cm_knowledge, dm11$timerun)
+summary(m3)
+rdplot3 =  rdplot(dm11$cm_knowledge, dm11$timerun,
+                 #binselect = "es", 
+                 nbins=468,
+                 scale = 1,
+                 kernel = tolower(m3$kernel),
+                 p=m3$p,
+                 h=m3$bws[1],
+                 x.lim = c(-m3$bws[1],m3$bws[1]),
+                 title = "RD Plot - Senate Elections Data",
+                 x.label = "Vote Share in Election at time t",
+                 y.label = "Vote Share in Election at time t+1",
+                 #ci=95
+)
+
+## use loess by hour, CV to find the best fit model: https://www.statology.org/loess-regression-in-r/ 
+
+level_adj = 0
+dm = dm %>% mutate(time_running = video_rela_time + level_adj)
+dm = dm %>% mutate(treat_dummy = ifelse(time_running>0, 1, 0),
+                   time_running_qdr = time_running^2)
+
+## loess 
+loess50 <- loess(cm_knowledge ~ video_rela_time_hour, data=dm1%>%filter(video_rela_time_hour<0), span=.5)
+smooth50 <- predict(loess50) 
+
+loess75 <- loess(cm_knowledge ~ video_rela_time_hour, data=dm1, span=.75)
+smooth75 <- predict(loess75) 
+
+loess90 <- loess(cm_knowledge ~ video_rela_time_hour, data=dm1, span=.9)
+smooth90 <- predict(loess90) 
+ # pch=19,
+plot(y=dm1$cm_knowledge, x=dm1$video_rela_time_hour, main='Loess Regression Models')
+lines(smooth50, x=dm1$video_rela_time_hour, col='red')
+lines(smooth75, x=dm1$video_rela_time_hour, col='purple')
+lines(smooth90, x=dm1$video_rela_time_hour, col='blue')
+legend('bottomright', legend=c('.5', '.75', '.9'),
+       col=c('red', 'purple', 'blue'),  title='Smoothing Span')
+
+
+
+
+## analyses 2: video level analysis
+dmv = dm %>% group_by(video_id, comment_count, video_rela_time) %>% summarize(y=mean(cm_knowledge_bi),
+                                                                              yc=mean(cm_knowledge))
+dmv = dmv %>% mutate(time_running = video_rela_time + level_adj)
+dmv = dmv %>% mutate(treat_dummy = ifelse(time_running>0, 1, 0),
+                   time_running_qdr = time_running^2)
+gg_srd = ggplot(data=dmv, aes(time_running, y)) +
+  geom_point(aes(x = time_running, y = y), data = dmv)  +
+  #xlim(0,1) + ylim(0, ) +
+  geom_vline(xintercept = 0) +
+  xlab("Date of the video posted, centered around May 15, 2023") +
+  ylab("Proportion of comment with knowledge construction") +
+  #scale_y_continuous(breaks=seq(0,1,0.2)) +
+  ggtitle("Video-level knowledge construction and the date of video") 
+gg_srd + stat_smooth(aes(time_running, y, group = treat_dummy), 
+                     method = "glm", formula = y ~ x + I(x^2))
+rdit3 <- lm(y ~ time_running + treat_dummy + time_running*treat_dummy, 
+           subset(dmv, (time_running >= -50) | (time_running <=50))
+) 
+summary(rdit3)
+
+
+gg_srd = ggplot(data=dmv, aes(time_running, yc)) +
+  geom_point(aes(x = time_running, y = yc), data = dmv)  +
+  #xlim(0,1) + ylim(0, ) +
+  geom_vline(xintercept = 0) +
+  xlab("Date of the video posted, centered around May 15, 2023") +
+  ylab("Score of knowledge construction") +
+  #scale_y_continuous(breaks=seq(0,1,0.2)) +
+  ggtitle("Video-level knowledge construction and the date of video") 
+gg_srd + stat_smooth(aes(time_running, yc, group = treat_dummy), 
+                     method = "glm", formula = y ~ x + I(x^2))
+rdit4 <- lm(yc ~ time_running + treat_dummy + time_running*treat_dummy, 
+            subset(dmv, (time_running >= -50) | (time_running <=50))
+) 
+summary(rdit4)
+
+## analysis 3
+gg_srd = ggplot(data=dm, aes(time_running, cm_knowledge_bi)) +
+  geom_point(aes(x = time_running, y = cm_knowledge_bi), data = dm)  +
+  geom_vline(xintercept = 0) +
+  xlab("Date of the video posted, centered on May 15, 2023") +
+  ylab("Have knowledge construction or not") +
+  ggtitle("Knowledge construction in comment and the date of video") 
+gg_srd + stat_smooth(aes(time_running, cm_knowledge_bi, group = treat_dummy), 
+                     method = "glm", formula = y ~ x + I(x^2))
+rdplot(dm$cm_knowledge_bi, dm$time_running, 
+        p=2, 
+       x.label = 'Running Variable', y.label = 'Outcome',
+       title = 'RD plot: proportion of comment with knowledge construction by video date')
+
+gg_srd = ggplot(data=dm, aes(time_running, cm_knowledge)) +
+  geom_point(aes(x = time_running, y = cm_knowledge), data = dm)  +
+  geom_vline(xintercept = 0) +
+  xlab("Date of the video posted, centered on May 15, 2023") +
+  ylab("Knowledge construction score") +
+  ggtitle("Knowledge construction in comment and the date of video") 
+gg_srd + stat_smooth(aes(time_running, cm_knowledge, group = treat_dummy), 
+                     method = "lm", formula = y ~ x + I(x^2))
+rdplot(dm$cm_knowledge, dm$time_running, 
+       p=2, 
+       x.label = 'Running Variable', y.label = 'Outcome',
+       title = 'RD plot: knowledge construction score by video date')
+
+rdit5 <- lmer(formula = cm_knowledge_bi ~ 1 + user_as_ttcolab+time_running*treat_dummy+time_running_qdr*treat_dummy + (1 |video_id), 
+           dm)
+summary(rdit5)
+rdit6 <- lmer(formula = cm_knowledge ~ 1 + user_as_ttcolab+time_running*treat_dummy+ time_running_qdr*treat_dummy+ (1 |video_id), 
+             dm)
+summary(rdit6)
+
+library(rdrobust)
+rdr <- rdrobust(y = dm$cm_knowledge,
+                x = dm$time_running, c = 0)
+summary(rdr)
+
+
+## analysis 1: Applying ITS or RDIT
+dm1 = dm1 %>% mutate(time_running = video_rela_time + level_adj)
+dm1 = dm1 %>% mutate(treat_dummy = ifelse(time_running>0, 1, 0))
+with(subset(dm1, time_running >= -50 & time_running <=50), 
+     rdplot(y = cm_knowledge_bi, p=2, x = time_running, nbins=100, 
+            #y.lim = c(0, 1), 
+            title="Discontinuity in knowledge construction after the introduction of MHA", 
+            x.label="Date of VIDEO (centered on May 15, 2023)", 
+            y.label="Proportion of comments with knowledge construction"))
+rdit <- lm(cm_knowledge_bi ~ time_running + treat_dummy + time_running*treat_dummy, 
+           subset(dm1, (time_running >= -50) | (time_running <=50))
+) 
+summary(rdit)
+
+dm2 = dm2 %>% mutate(time_running = comment_rela_time + level_adj)
+dm2 = dm2 %>% mutate(treat_dummy = ifelse(time_running>0, 1, 0))
+with(subset(dm2, time_running >= -50 & time_running <=50), 
+     rdplot(y = cm_knowledge_bi, p=2, x = time_running, nbins=100, 
+            #y.lim = c(0, 1), 
+            title="Discontinuity in knowledge construction after the introduction of the MHA", 
+            x.label="Date of COMMENT (centered on May 15, 2023)", 
+            y.label="Proportion of comments with knowledge construction"))
+rdit2 <- lm(cm_knowledge_bi ~ time_running + treat_dummy + time_running*treat_dummy, 
+           subset(dm2, (time_running >= -50) | (time_running <=50))
+) 
+summary(rdit2)
+
+
+rdit <- lm(cm_knowledge_bi ~ time_running + treat_dummy + time_running*treat_dummy, 
+           subset(dm1, (time_running >= -100 & time_running<= -30) | (time_running>30 & time_running <=100))
+           ) 
+summary(rdit)
+rdit2 <- lm(cm_knowledge_bi ~ time_running + treatment_dummy + time_running*treatment_dummy, 
+           subset(dm2, time_running >= -50 & time_running <=50)) 
+summary(rdit2)
+
+######### depre
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_b_da*largefollow + (1 |TTID) + (1|TTID:VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + assignment*prepost_b_da + (1 |VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_b_da + (1 |VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + assignment*prepost_b_da + (1 |TTID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_b_da + (1 |TTID), data = dt)
+summary(model)
+
+## all bd_a not working 
+model = lmer(formula = cm_knowledge_bi ~ 1 + assignment*prepost_bd_a + (1 |TTID) + (1|TTID:VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_bd_a + (1 |TTID) + (1|TTID:VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + assignment*prepost_bd_a + (1 |VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_bd_a + (1 |VID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + assignment*prepost_bd_a + (1 |TTID), data = dt)
+summary(model)
+
+model = lmer(formula = cm_knowledge_bi ~ 1 + treatment*prepost_bd_a + (1 |TTID), data = dt)
+summary(model)
+
+
+## too much given our sample size
+library(merDeriv)
+library(clubSandwich)
+library(CR2)
+CR2::robust_mixed(model, Gname = 'TTID', type = 'CR0')
+
+sand <- sandwich(model, 
+                 bread = bread(model),
+                 mean = meat(model, level = 3))
+
+res = vcovCR(model, type = 'CR2')
