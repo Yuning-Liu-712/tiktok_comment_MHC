@@ -12,7 +12,7 @@ library(sjPlot)
 library(sjmisc)
 
 
-setwd('D:/[seted_path]')
+setwd('D:\\my research\\tiktok harvard\\code_for_rep\\tiktok_comment_MHC\\case 1')
 set.seed(1)
 dt = read.csv('tt_comment_case1_formlm.csv')
 
@@ -25,9 +25,6 @@ dt <- within(dt, prepost_b_da <- relevel(as.factor(prepost_b_da), ref='Pre'))
 dt <- within(dt, prepost_bd_a <- relevel(as.factor(prepost_bd_a), ref='Pre'))
 
 
-vary = 'cm_knowledge_bi'
-varx = 'treatment'
-varm = 'sessions_bi'
 vary_l = c('cm_knowledge','cm_knowledge_bi', 'cm_express_appreciation',
            'cm_knowledge_agreement', 'cm_knowledge_application', 
            'cm_knowledge_clarification', 'cm_knowledge_disagreement',
@@ -107,16 +104,18 @@ get_mlm_base_res <- function(vary, varx, lm_res_df, dt, need_two_level=F){
 }
 
 
+
+## main model -- keep Apr 2023
 lm_res_df = data.frame()
 for (vary in vary_l){
   for (varx in c('treatment')){
     lm_res_df = get_mlm_base_res(vary, varx, lm_res_df, dt)
   }
 }
-write.csv(lm_res_df, 'tt_case1_mlm_res_0824.csv', row.names = F, na='')
+write.csv(lm_res_df, 'tt_case1_mlm_res0.csv', row.names = F, na='')
 
 
-## version 2
+## main model -- drop Apr 2023
 dt_v2 = dt %>% filter(prepost != 'During')
 lm_res_df2 = data.frame()
 for (vary in vary_l){
@@ -124,21 +123,20 @@ for (vary in vary_l){
     lm_res_df2 = get_mlm_base_res(vary, varx, lm_res_df2, dt_v2)
   }
 }
-write.csv(lm_res_df2, 'tt_case1_mlm_res_aprfuzzy_0824.csv', row.names = F, na='')
+write.csv(lm_res_df2, 'tt_case1_mlm_res_aprfuzzy0.csv', row.names = F, na='')
 
-
-## engagement
+## moderation model
+# engagement
 dt = dt %>% mutate(engagement_large = ifelse(engagement_bi=='big_than10', 'Yes', 'No'))
 
-## LARGE FOLLOWER
+# LARGE FOLLOWER
 dt = dt %>% mutate(largefollow = ifelse(ttfollow>750000, 'Yes', 'No'))
 dt <- within(dt, largefollow <- as.factor(largefollow))
 dt = dt %>% mutate(ttf = as.integer(ttfollow/500000))
 dt <- within(dt, ttf <- as.factor(ttf))
 unique(dt$ttf)
 
-
-## licensed, coaching
+# licensed, coaching
 dt <- within(dt, licensed <- relevel(as.factor(licensed), ref='No'))
 dt <- within(dt, coaching <- relevel(as.factor(coaching), ref='No'))
 dt <- within(dt, engagement_large <- relevel(as.factor(engagement_large), ref='No'))
@@ -228,10 +226,10 @@ get_mlm_moderation_res <- function(vary, varx, varm, lm_res_df, dt, need_two_lev
 lm_res_df2 = data.frame()
 for (vary in vary_l){
   for (varx in c('treatment')){
-    for (varm in c('largefollow', 'engagement_large', 'lgbtq', 'licensed', 'coaching')){
+    for (varm in c('largefollow', 'engagement_large', 'licensed', 'coaching')){
       lm_res_df2 = get_mlm_moderation_res(vary, varx, varm, lm_res_df2, dt)
     }
   }
-  write.csv(lm_res_df2, 'tt_case1_mlm_res_moderation_tmpsave_0824.csv', row.names = F, na='')
+  write.csv(lm_res_df2, 'tt_case1_mlm_res_moderation_tmpsave.csv', row.names = F, na='')
 }
-write.csv(lm_res_df2, 'tt_case1_mlm_res_moderation_0824.csv', row.names = F, na='')
+write.csv(lm_res_df2, 'tt_case1_mlm_res_moderation.csv', row.names = F, na='')
